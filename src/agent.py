@@ -11,6 +11,8 @@ from .history import History
 from .ops import linear, conv2d
 from .utils import get_time
 
+from tensorflow.contrib.framework.python.ops import variables
+
 class Agent(BaseModel):
   def __init__(self, config, environment, optimizer, lr_op):
     super(Agent, self).__init__(config)
@@ -247,6 +249,7 @@ class Agent(BaseModel):
 
     # target network
     with tf.variable_scope('target'):
+
       if self.cnn_format == 'NHWC':
         self.target_s_t = tf.placeholder('float32', 
             [None, self.screen_width, self.screen_height, self.history_length], name='target_s_t')
@@ -287,6 +290,11 @@ class Agent(BaseModel):
       self.target_q_idx = tf.placeholder('int32', [None, None], 'outputs_idx')
       self.target_q_with_idx = tf.gather_nd(self.target_q, self.target_q_idx)
 
+      global_collection = tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES)
+      for var in variables.get_variables(scope="target"):
+          tf.add_to_collection(tf.GraphKeys.LOCAL_VARIABLES, var)
+          global_collection.remove(var)
+
     with tf.variable_scope('pred_to_target'):
       self.t_w_input = {}
       self.t_w_assign_op = {}
@@ -311,6 +319,11 @@ class Agent(BaseModel):
         new_grads_and_vars.append((tf.clip_by_norm(grad, 40), var))
 
       self.optim = self.optimizer.apply_gradients(new_grads_and_vars)
+
+      global_collection = tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES)
+      for var in variables.get_variables(scope="optimizer"):
+          tf.add_to_collection(tf.GraphKeys.LOCAL_VARIABLES, var)
+          global_collection.remove(var)
 
     with tf.variable_scope('summary'):
       scalar_summary_tags = ['average.reward', 'average.loss', 'average.q', \
