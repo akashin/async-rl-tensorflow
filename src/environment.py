@@ -14,6 +14,7 @@ except:
 class Environment(object):
   def __init__(self, config):
     self.env = gym.make(config.env_name)
+    self.env.reset()
 
     screen_width, screen_height, self.action_repeat, self.random_start = \
         config.screen_width, config.screen_height, config.action_repeat, config.random_start
@@ -34,7 +35,7 @@ class Environment(object):
 
   def new_random_game(self):
     self.new_game(True)
-    for _ in xrange(random.randint(0, self.random_start - 1)):
+    for _ in range(random.randint(0, self.random_start - 1)):
       self._step(0)
     self.render()
     return self.screen, 0, 0, self.terminal
@@ -58,7 +59,7 @@ class Environment(object):
 
   @property
   def lives(self):
-    return self.env.ale.lives()
+    return self.env.unwrapped.ale.lives()
 
   @property
   def state(self):
@@ -79,7 +80,7 @@ class GymEnvironment(Environment):
     cumulated_reward = 0
     start_lives = self.lives
 
-    for _ in xrange(self.action_repeat):
+    for _ in range(self.action_repeat):
       self._step(action)
       cumulated_reward = cumulated_reward + self.reward
 

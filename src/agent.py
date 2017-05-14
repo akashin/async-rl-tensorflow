@@ -1,7 +1,7 @@
-
 import os
 import time
 import random
+import functools
 import numpy as np
 from tqdm import tqdm
 import tensorflow as tf
@@ -9,7 +9,7 @@ import tensorflow as tf
 from .base import BaseModel
 from .history import History
 from .ops import linear, conv2d
-from utils import get_time
+from .utils import get_time
 
 class Agent(BaseModel):
   def __init__(self, config, environment, optimizer, lr_op):
@@ -26,15 +26,15 @@ class Agent(BaseModel):
     self.step_inc_op = self.step_op.assign_add(1, use_locking=True)
     self.build_dqn()
 
-    self.saver = tf.train.Saver(self.w.values() + [self.step_op], max_to_keep=30)
-    self.summary_op = tf.merge_all_summaries()
-    self.init_op = tf.initialize_all_variables()
+    self.saver = tf.train.Saver(list(self.w.values()) + [self.step_op], max_to_keep=30)
+    self.summary_op = tf.summary.merge_all()
+    self.init_op = tf.global_variables_initializer()
 
   def before_train(self, is_chief):
     self.T = self.step = self.step_op.eval(session=self.sess)
     screen, reward, action, terminal = self.env.new_random_game()
 
-    for _ in xrange(self.history_length):
+    for _ in range(self.history_length):
       self.history.add(screen)
 
     self.batch_s_t = [self.history.copy()]
@@ -43,9 +43,9 @@ class Agent(BaseModel):
     self.batch_terminal = []
 
     if is_chief:
-      iterator = tqdm(xrange(self.step, self.max_step), ncols=70, initial=self.step)
+      iterator = tqdm(range(self.step, self.max_step), ncols=70, initial=self.step)
     else:
-      iterator = xrange(self.step, self.max_step)
+      iterator = range(self.step, self.max_step)
 
     return screen, reward, action, terminal, iterator
 
@@ -113,8 +113,8 @@ class Agent(BaseModel):
         except:
           max_ep_reward, min_ep_reward, avg_ep_reward = 0, 0, 0
 
-        print '\navg_r: %.4f, avg_l: %.6f, avg_q: %3.6f, avg_ep_r: %.4f, max_ep_r: %.4f, min_ep_r: %.4f, # game: %d' \
-            % (avg_reward, avg_loss, avg_q, avg_ep_reward, max_ep_reward, min_ep_reward, num_game)
+        print('\navg_r: %.4f, avg_l: %.6f, avg_q: %3.6f, avg_ep_r: %.4f, max_ep_r: %.4f, min_ep_r: %.4f, # game: %d' \
+            % (avg_reward, avg_loss, avg_q, avg_ep_reward, max_ep_reward, min_ep_reward, num_game))
 
         if self.step > 180:
           self.inject_summary(sv, {
@@ -229,7 +229,7 @@ class Agent(BaseModel):
           32, [4, 4], [2, 2], initializer, activation_fn, self.cnn_format, name='l2')
 
       shape = self.l2.get_shape().as_list()
-      self.l2_flat = tf.reshape(self.l2, [-1, reduce(lambda x, y: x * y, shape[1:])])
+      self.l2_flat = tf.reshape(self.l2, [-1, functools.reduce(lambda x, y: x * y, shape[1:])])
 
       if self.dueling:
         self.value_hid, self.w['l3_val_w'], self.w['l3_val_b'] = \
@@ -268,7 +268,7 @@ class Agent(BaseModel):
           32, [4, 4], [2, 2], initializer, activation_fn, self.cnn_format, name='target_l2')
 
       shape = self.target_l2.get_shape().as_list()
-      self.target_l2_flat = tf.reshape(self.target_l2, [-1, reduce(lambda x, y: x * y, shape[1:])])
+      self.target_l2_flat = tf.reshape(self.target_l2, [-1, functools.reduce(lambda x, y: x * y, shape[1:])])
 
       if self.dueling:
         self.t_value_hid, self.t_w['l3_val_w'], self.t_w['l3_val_b'] = \
@@ -314,7 +314,7 @@ class Agent(BaseModel):
       self.loss = tf.reduce_mean(tf.square(self.delta), name='loss')
 
       new_grads_and_vars = []
-      grads_and_vars = self.optimizer.compute_gradients(self.loss, self.w.values())
+      grads_and_vars = self.optimizer.compute_gradients(self.loss, list(self.w.values()))
       for grad, var in tuple(grads_and_vars):
         new_grads_and_vars.append((tf.clip_by_norm(grad, 40), var))
 
@@ -329,15 +329,15 @@ class Agent(BaseModel):
 
       for tag in scalar_summary_tags:
         self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
-        self.summary_ops[tag]  = tf.scalar_summary("%s-%s/%s" % (self.env_name, self.env_type, tag), self.summary_placeholders[tag])
+        self.summary_ops[tag]  = tf.summary.scalar("%s-%s/%s" % (self.env_name, self.env_type, tag), self.summary_placeholders[tag])
 
-      self.summary_op = tf.merge_summary(self.summary_ops.values(), name='total_summary')
+      self.summary_op = tf.summary.merge(list(self.summary_ops.values()), name='total_summary')
 
       histogram_summary_tags = ['episode.rewards', 'episode.actions']
 
       for tag in histogram_summary_tags:
         self.summary_placeholders[tag] = tf.placeholder('float32', None, name=tag.replace(' ', '_'))
-        self.summary_ops[tag]  = tf.histogram_summary(tag, self.summary_placeholders[tag])
+        self.summary_ops[tag]  = tf.summary.histogram(tag, self.summary_placeholders[tag])
 
   def update_target_q_network(self):
     for name in self.w.keys():
@@ -359,14 +359,14 @@ class Agent(BaseModel):
       self.env.env.monitor.start(gym_dir)
 
     best_reward, best_idx = 0, 0
-    for idx in xrange(n_episode):
+    for idx in range(n_episode):
       screen, reward, action, terminal = self.env.new_random_game()
       current_reward = 0
 
-      for _ in xrange(self.history_length):
+      for _ in range(self.history_length):
         test_history.add(screen)
 
-      for t in tqdm(xrange(n_step), ncols=70):
+      for t in tqdm(range(n_step), ncols=70):
         # 1. predict
         action = self.predict(test_history.get(), test_ep)
         # 2. act
@@ -382,9 +382,9 @@ class Agent(BaseModel):
         best_reward = current_reward
         best_idx = idx
 
-      print "="*30
-      print " [%d] Best reward : %d" % (best_idx, best_reward)
-      print "="*30
+      print("="*30)
+      print(" [%d] Best reward : %d" % (best_idx, best_reward))
+      print("="*30)
 
     if not self.display:
       self.env.env.monitor.close()
