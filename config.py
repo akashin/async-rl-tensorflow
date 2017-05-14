@@ -33,7 +33,7 @@ class AgentConfig(object):
   _test_step = 0.5 * scale
 
 class EnvironmentConfig(object):
-  env_name = 'Breakout-v0'
+  env_name = 'Pong-v0'
 
   screen_width  = 84
   screen_height = 84

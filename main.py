@@ -13,7 +13,7 @@ flags.DEFINE_boolean('dueling', False, 'Whether to use dueling deep q-network')
 flags.DEFINE_boolean('double_q', False, 'Whether to use double q-learning')
 
 # Environment
-flags.DEFINE_string('env_name', 'Breakout-v0', 'The name of gym environment to use')
+flags.DEFINE_string('env_name', 'Pong-v0', 'The name of gym environment to use')
 flags.DEFINE_integer('action_repeat', 1, 'The number of action to be repeated')
 
 # Optimizer
@@ -68,16 +68,11 @@ def main(_):
       agent.ep_end = random.sample([0.1, 0.01, 0.5], 1)[0]
 
     print(agent.model_dir)
+    logdir = "./logs/" + agent.model_dir
 
-    # Create a "supervisor", which oversees the training process.
     is_chief = (FLAGS.task_index == 0)
-    sv = tf.train.Supervisor(is_chief=is_chief,
-                             logdir="./logs/" + agent.model_dir,
-                             init_op=agent.init_op,
-                             summary_op=None,
-                             saver=agent.saver,
-                             global_step=agent.step_op,
-                             save_model_secs=600)
+    if is_chief:
+        agent.summary_writer = tf.summary.FileWriter(logdir)
 
     if FLAGS.is_train:
       if is_chief:
@@ -87,14 +82,22 @@ def main(_):
     else:
       train_or_play = agent.play
 
-    with sv.managed_session(server.target) as sess:
+    hooks = [
+        tf.train.StopAtStepHook(last_step=config.max_step),
+    ]
+    scaffold = tf.train.Scaffold(saver=agent.saver)
+
+    with tf.train.MonitoredTrainingSession(
+            master=server.target,
+            is_chief=is_chief,
+            scaffold=scaffold,
+            checkpoint_dir=logdir,
+            save_summaries_steps=None,  # Disable default SummarySaverHook.
+            hooks=hooks) as sess:
       agent.sess = sess
       agent.update_target_q_network()
 
-      train_or_play(sv, is_chief)
-
-  # Ask for all the services to stop.
-  sv.stop()
+      train_or_play(is_chief)
 
 if __name__ == '__main__':
   tf.app.run()

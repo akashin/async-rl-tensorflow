@@ -22,13 +22,11 @@ class Agent(BaseModel):
     self.lr_op = lr_op
     self.optimizer = optimizer
 
-    self.step_op = tf.Variable(0, trainable=False, name='step')
+    self.step_op = tf.contrib.framework.get_or_create_global_step()
     self.step_inc_op = self.step_op.assign_add(1, use_locking=True)
     self.build_dqn()
 
     self.saver = tf.train.Saver(list(self.w.values()) + [self.step_op], max_to_keep=30)
-    self.summary_op = tf.summary.merge_all()
-    self.init_op = tf.global_variables_initializer()
 
   def before_train(self, is_chief):
     self.T = self.step = self.step_op.eval(session=self.sess)
@@ -49,13 +47,10 @@ class Agent(BaseModel):
 
     return screen, reward, action, terminal, iterator
 
-  def train(self, sv, is_chief):
+  def train(self, is_chief):
     screen, reward, action, terminal, iterator = self.before_train(is_chief)
 
     for self.step in iterator:
-      if self.step >= self.max_step:
-        sv.request_stop()
-
       # 1. predict
       action = self.predict(self.history.get())
       # 2. act
@@ -66,7 +61,7 @@ class Agent(BaseModel):
       if terminal:
         screen, reward, action, terminal = self.env.new_random_game()
 
-  def train_with_summary(self, sv, is_chief):
+  def train_with_summary(self, is_chief):
     screen, reward, action, terminal, iterator = self.before_train(is_chief)
 
     num_game, self.update_count, ep_reward = 0, 0, 0.
@@ -74,9 +69,6 @@ class Agent(BaseModel):
     ep_rewards, actions = [], []
 
     for self.step in iterator:
-      if self.step >= self.max_step:
-        sv.request_stop()
-
       if self.step == self.learn_start:
         num_game, self.update_count, ep_reward = 0, 0, 0.
         total_reward, self.total_loss, self.total_q = 0., 0., 0.
@@ -117,7 +109,7 @@ class Agent(BaseModel):
             % (avg_reward, avg_loss, avg_q, avg_ep_reward, max_ep_reward, min_ep_reward, num_game))
 
         if self.step > 180:
-          self.inject_summary(sv, {
+          self.inject_summary(self.summary_writer, {
               'average.reward': avg_reward,
               'average.loss': avg_loss,
               'average.q': avg_q,
@@ -343,12 +335,14 @@ class Agent(BaseModel):
     for name in self.w.keys():
       self.t_w_assign_op[name].eval(session=self.sess)
 
-  def inject_summary(self, sv, tag_dict, step):
-    sv.summary_computed(self.sess, self.sess.run(self.summary_op, {
-      self.summary_placeholders[tag]: value for tag, value in tag_dict.items()
-    }))
+  def inject_summary(self, summary_writer, tag_dict, step):
+    summary = self.sess.run(self.summary_op, {
+        self.summary_placeholders[tag]: value for tag, value in tag_dict.items()
+    })
+    summary_writer.add_summary(summary, global_step=step)
+    summary_writer.flush()
 
-  def play(self, sv, is_chief, n_step=10000, n_episode=100, test_ep=None, render=False):
+  def play(self, is_chief, n_step=10000, n_episode=100, test_ep=None, render=False):
     if test_ep == None:
       test_ep = self.ep_end
 
