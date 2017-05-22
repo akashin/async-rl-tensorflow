@@ -111,7 +111,8 @@ class Agent(BaseModel):
         print('\navg_r: %.4f, avg_l: %.6f, avg_q: %3.6f, avg_ep_r: %.4f, max_ep_r: %.4f, min_ep_r: %.4f, # game: %d' \
             % (avg_reward, avg_loss, avg_q, avg_ep_reward, max_ep_reward, min_ep_reward, num_game))
 
-        if self.step > 180:
+        # if self.step > 180:
+        if False:
           self.inject_summary(self.summary_writer, {
               'average.reward': avg_reward,
               'average.loss': avg_loss,
@@ -140,9 +141,29 @@ class Agent(BaseModel):
 
     if random.random() < ep:
       action = random.randrange(self.env.action_size)
+      if action >= self.env.action_size:
+        print("Rand range action: {}".format(action))
     else:
-      action = self.q_action.eval({self.s_t: [s_t]}, session=self.sess)[0]
+      action = self.sample_action(s_t)
+      # action = self.q_action.eval({self.s_t: [s_t]}, session=self.sess)[0]
+      # action = self.sampled_action.eval({self.s_t: np.expand_dims(s_t, axis=0)}, session=self.sess)[0]
+      if action >= self.env.action_size:
+        print("Sampled action: {}".format(action))
+        print("s_t.shape: {}".format(s_t.shape))
 
+    return action
+
+  def sample_action(self, s_t):
+    logits = self.sess.run(self.policy_logits, {self.s_t: np.expand_dims(s_t, axis=0)})[0]
+
+    def softmax(y):
+      """ simple helper function here that takes unnormalized logprobs """
+      maxy = np.amax(y)
+      e = np.exp(y - maxy)
+      return e / np.sum(e)
+
+    probs = softmax(logits) - 1e-5
+    action = np.argmax(np.random.multinomial(1, probs))
     return action
 
   def observe(self, screen, reward, action, terminal, is_chief=False):
@@ -154,7 +175,7 @@ class Agent(BaseModel):
     self.batch_reward.append(reward)
     self.batch_terminal.append(terminal)
 
-    if self.step % self.train_frequency == 0:
+    if (self.step % self.train_frequency == 0) or terminal:
       self.batch_update(is_chief)
 
     self.T = self.sess.run(self.step_inc_op)
@@ -162,38 +183,47 @@ class Agent(BaseModel):
       self.update_target_q_network()
 
   def batch_update(self, is_chief):
-    s_t, action, reward, s_t_plus_1, terminal = \
-        self.batch_s_t[:-1], self.batch_action, self.batch_reward, self.batch_s_t[1:], self.batch_terminal
+    N = len(self.batch_reward)
+
+    s_t, action, reward, terminal = \
+        self.batch_s_t, self.batch_action, self.batch_reward, self.batch_terminal
+
+    r = 0 if terminal else self.value.eval({self.s_t: np.expand_dims(s_t[-1], axis=0)}, session=self.sess)[0]
+    R = np.zeros(N)
+    for t in reversed(range(N)):
+      r = reward[t] + r * self.discount
+      R[t] = r
 
     #assert len(s_t) == self.batch_size and len(action) == self.batch_size
     #assert np.array_equal(s_t[0][1:], s_t_plus_1[0][:-1])
 
-    if self.double_q:
-      # Double Q-learning
-      pred_action = self.q_action.eval({self.s_t: s_t_plus_1}, session=self.sess)
+    # if self.double_q:
+      # # Double Q-learning
+      # # pred_action = self.q_action.eval({self.s_t: s_t_plus_1}, session=self.sess)
+      # pred_action = self.sampled_action.eval({self.s_t: s_t_plus_1}, sessions=self.sess)
 
-      q_t_plus_1_with_pred_action = self.target_q_with_idx.eval({
-        self.target_s_t: s_t_plus_1,
-        self.target_q_idx: [[idx, pred_a] for idx, pred_a in enumerate(pred_action)]
-      }, session=self.sess)
-      target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
-    else:
-      q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1}, session=self.sess)
+      # q_t_plus_1_with_pred_action = self.target_q_with_idx.eval({
+        # self.target_s_t: s_t_plus_1,
+        # self.target_q_idx: [[idx, pred_a] for idx, pred_a in enumerate(pred_action)]
+      # }, session=self.sess)
+      # target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
+    # else:
+      # q_t_plus_1 = self.target_q.eval({self.target_s_t: s_t_plus_1}, session=self.sess)
 
-      terminal = np.array(terminal) + 0.
-      max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
-      target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
+      # terminal = np.array(terminal) + 0.
+      # max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
+      # target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
 
-    _, q_t, loss = self.sess.run([self.optim, self.q, self.loss], {
-      self.target_q_t: target_q_t,
+    _, loss = self.sess.run([self.optim, self.loss], {
+      self.R: R,
       self.action: action,
-      self.s_t: s_t,
+      self.s_t: s_t[:-1],
       self.lr_op: self.lr,
     })
 
     if is_chief:
       self.total_loss += loss
-      self.total_q += q_t.mean()
+      # self.total_q += q_t.mean()
       self.update_count += 1
 
     self.batch_s_t = [self.history.copy()]
@@ -209,6 +239,7 @@ class Agent(BaseModel):
     activation_fn = tf.nn.relu
     DQN_type = 'nature'
     data_format = self.cnn_format
+    beta = 0.1
 
     if data_format == 'NHWC':
       self.s_t = tf.placeholder('float32',
@@ -224,10 +255,12 @@ class Agent(BaseModel):
     else:
       raise ValueError('Unknown data_format: %s' % data_format)
 
+    def flat(layer):
+        shape = layer.get_shape().as_list()
+        return tf.reshape(layer, [-1, functools.reduce(lambda x, y: x * y, shape[1:])])
+
     if DQN_type.lower() == 'nature':
       with tf.variable_scope('Nature_DQN'), tf.device(device):
-        self.w = {}
-
         self.l0 = tf.div(self.s_t, 255.)
         self.l1, self.w['l1_w'], self.w['l1_b'] = conv2d(self.l0,
             32, [8, 8], [4, 4], initializer, activation_fn, data_format, name='l1_conv')
@@ -235,19 +268,23 @@ class Agent(BaseModel):
             64, [4, 4], [2, 2], initializer, activation_fn, data_format, name='l2_conv')
         self.l3, self.w['l3_w'], self.w['l3_b'] = conv2d(self.l2,
             64, [3, 3], [1, 1], initializer, activation_fn, data_format, name='l3_conv')
+
+        self.l3_flat = flat(self.l3)
+
         self.l4, self.w['l4_w'], self.w['l4_b'] = \
-            linear(self.l3, 512, activation_fn=activation_fn, name='l4_linear')
+            linear(self.l3_flat, 512, activation_fn=activation_fn, name='l4_linear')
     elif DQN_type.lower() == 'nips':
       with tf.variable_scope('Nips_DQN'), tf.device(device):
-        self.w = {}
-
         self.l0 = tf.div(self.s_t, 255.)
         self.l1, self.w['l1_w'], self.w['l1_b'] = conv2d(self.l0,
             16, [8, 8], [4, 4], initializer, activation_fn, data_format, name='l1_conv')
         self.l2, self.w['l2_w'], self.w['l2_b'] = conv2d(self.l1,
             32, [4, 4], [2, 2], initializer, activation_fn, data_format, name='l2_conv')
+
+        self.l2_flat = flat(self.l2)
+
         self.l4, self.w['l4_w'], self.w['l4_b'] = \
-            linear(self.l2, 256, activation_fn=activation_fn, name='l4_linear')
+            linear(self.l2_flat, 256, activation_fn=activation_fn, name='l4_linear')
     else:
       raise ValueError('Wrong DQN type: %s' % DQN_type)
 
@@ -258,7 +295,7 @@ class Agent(BaseModel):
     # Policy head.
     with tf.variable_scope('policy'):
       # 512 -> action_size
-      self.policy_logits, self.w['p_w'], self.w['p_b'] = linear(self.l4, action_size, name='linear')
+      self.policy_logits, self.w['p_w'], self.w['p_b'] = linear(self.l4, self.env.action_size, name='linear')
 
       with tf.variable_scope('policy'):
         self.policy = tf.nn.softmax(self.policy_logits, name='pi')
@@ -267,20 +304,25 @@ class Agent(BaseModel):
       with tf.variable_scope('policy_entropy'):
         self.policy_entropy = -tf.reduce_sum(self.policy * self.log_policy, 1)
 
-      with tf.variable_scope('pred_action'):
-        self.sampled_action = batch_sample(self.policy)
-        sampled_action_one_hot = tf.one_hot(self.sampled_action, action_size, 1., 0.)
-      with tf.variable_scope('log_policy_of_action'):
-        self.log_policy_of_sampled_action = tf.reduce_sum(self.log_policy * sampled_action_one_hot, 1)
+      # with tf.variable_scope('pred_action'):
+        # self.sampled_action = tf.multinomial(self.policy_logits, 1)
+        # self.sampled_action = batch_sample(self.policy)
+        # sampled_action_one_hot = tf.one_hot(self.sampled_action, self.env.action_size, 1., 0.)
+      # with tf.variable_scope('log_policy_of_action'):
+        # self.log_policy_of_sampled_action = tf.reduce_sum(self.log_policy * sampled_action_one_hot, 1)
 
     # Value head.
     with tf.variable_scope('value'):
       # 512 -> 1
       self.value, self.w['q_w'], self.w['q_b'] = linear(self.l4, 1, name='linear')
 
-    with tf.variable_scope('optim'):
+    with tf.variable_scope('optimizer'):
       self.R = tf.placeholder('float32', [None], name='target_reward')
-      self.true_log_policy = tf.placeholder('float32', [None], name='true_action')
+      self.action = tf.placeholder('int64', [None], name='action')
+
+      # self.true_log_policy = tf.placeholder('float32', [None], name='true_action')
+      self.true_log_policy = tf.nn.sparse_softmax_cross_entropy_with_logits(
+          labels = self.action, logits = self.policy_logits, name='true_action')
 
       # TODO: equation on paper and codes of other implementations are different
       with tf.variable_scope('policy_loss'):
@@ -291,10 +333,23 @@ class Agent(BaseModel):
         self.value_loss = tf.pow(self.R - self.value, 2) / 2
 
       with tf.variable_scope('total_loss'):
-        self.total_loss = self.policy_loss + self.value_loss
+        self.loss = tf.reduce_mean(self.policy_loss + self.value_loss)
+
+      new_grads_and_vars = []
+      grads_and_vars = self.optimizer.compute_gradients(
+          self.loss, list(self.w.values()))
+      for grad, var in tuple(grads_and_vars):
+        new_grads_and_vars.append((tf.clip_by_norm(grad, 40), var))
+
+      self.optim = self.optimizer.apply_gradients(new_grads_and_vars)
+
+      global_collection = tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES)
+      for var in variables.get_variables(scope="optimizer"):
+          tf.add_to_collection(tf.GraphKeys.LOCAL_VARIABLES, var)
+          global_collection.remove(var)
 
     # if global_network != None:
-    if True:
+    if False:
       with tf.variable_scope('copy_from_target'):
         copy_ops = []
 
@@ -318,7 +373,7 @@ class Agent(BaseModel):
       if self.cnn_format == 'NHWC':
         self.s_t = tf.placeholder('float32',
             [None, self.screen_width, self.screen_height, self.history_length], name='s_t')
-      else:
+      elif data_format == 'NCHW':
         self.s_t = tf.placeholder('float32',
             [None, self.history_length, self.screen_width, self.screen_height], name='s_t')
 
@@ -450,8 +505,9 @@ class Agent(BaseModel):
         self.summary_ops[tag]  = tf.summary.histogram(tag, self.summary_placeholders[tag])
 
   def update_target_q_network(self):
-    for name in self.w.keys():
-      self.t_w_assign_op[name].eval(session=self.sess)
+    pass
+    # for name in self.w.keys():
+      # self.t_w_assign_op[name].eval(session=self.sess)
 
   def inject_summary(self, summary_writer, tag_dict, step):
     summary = self.sess.run(self.summary_op, {
